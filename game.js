@@ -1,7 +1,9 @@
+// Конфигурация Supabase
 const SUPABASE_URL = 'https://lazsklnncyvqmmwkbzoj.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhenNrbG5uY3l2cW1td2tiem9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2NTI4MTksImV4cCI6MjA3OTIyODgxOX0.XzMQCCleyEqie5Bl3of0Q_SeXMSBkCKhuLJ8CQsuy5w';
 
-const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+// Инициализация Supabase клиента
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let currentGameId = null;
 let playerId = null;
@@ -18,7 +20,7 @@ async function createGame() {
     const gameId = generateGameCode();
     const ships = generateShips();
     
-    const { data, error } = await supabase
+    const { data, error } = await supabaseClient
         .from('games')
         .insert([
             { 
@@ -33,6 +35,7 @@ async function createGame() {
 
     if (error) {
         console.error('Error creating game:', error);
+        alert('Ошибка создания игры: ' + error.message);
         return;
     }
 
@@ -47,9 +50,14 @@ async function createGame() {
 
 // Присоединение к игре
 async function joinGame() {
-    const gameCode = document.getElementById('gameCode').value;
+    const gameCode = document.getElementById('gameCode').value.trim();
     
-    const { data, error } = await supabase
+    if (!gameCode) {
+        alert('Введите код игры');
+        return;
+    }
+    
+    const { data, error } = await supabaseClient
         .from('games')
         .select('*')
         .eq('id', gameCode)
@@ -63,7 +71,7 @@ async function joinGame() {
 
     const ships = generateShips();
     
-    const { error: updateError } = await supabase
+    const { error: updateError } = await supabaseClient
         .from('games')
         .update({
             player2_id: playerId,
@@ -74,6 +82,7 @@ async function joinGame() {
 
     if (updateError) {
         console.error('Error joining game:', updateError);
+        alert('Ошибка присоединения к игре: ' + updateError.message);
         return;
     }
 
@@ -88,7 +97,7 @@ async function joinGame() {
 
 // Слушатель изменений игры
 function startGameListener() {
-    supabase
+    supabaseClient
         .channel('game_changes')
         .on('postgres_changes', 
             { 
@@ -124,11 +133,16 @@ async function handleGameUpdate(payload) {
 
 // Выстрел
 async function makeShot(x, y) {
-    const { data: game } = await supabase
+    const { data: game, error } = await supabaseClient
         .from('games')
         .select('*')
         .eq('id', currentGameId)
         .single();
+
+    if (error) {
+        console.error('Error fetching game:', error);
+        return;
+    }
 
     if (game.current_turn !== playerId) {
         alert('Не ваш ход!');
@@ -163,10 +177,14 @@ async function makeShot(x, y) {
         await updateStats(isPlayer1 ? game.player2_id : game.player1_id, false);
     }
 
-    await supabase
+    const { error: updateError } = await supabaseClient
         .from('games')
         .update(updateData)
         .eq('id', currentGameId);
+
+    if (updateError) {
+        console.error('Error updating game:', updateError);
+    }
 }
 
 // Вспомогательные функции
@@ -184,7 +202,10 @@ function generateShips() {
     
     sizes.forEach(size => {
         let placed = false;
-        while (!placed) {
+        let attempts = 0;
+        
+        while (!placed && attempts < 100) {
+            attempts++;
             const horizontal = Math.random() > 0.5;
             const x = Math.floor(Math.random() * (horizontal ? 11 - size : 10));
             const y = Math.floor(Math.random() * (horizontal ? 10 : 11 - size));
@@ -217,7 +238,7 @@ function generateShips() {
 }
 
 function createEmptyBoard() {
-    return Array(10).fill().map(() => Array(10).fill(0));
+    return [];
 }
 
 function renderBoard(ships, boardId, isEnemy) {
@@ -251,17 +272,29 @@ function renderBoard(ships, boardId, isEnemy) {
 
 function renderEnemyBoard(shots, enemyShips) {
     const board = document.getElementById('enemyBoard');
+    const cells = board.getElementsByClassName('cell');
     
-    shots.forEach(shot => {
-        const cell = board.querySelector(`[data-x="${shot.x}"][data-y="${shot.y}"]`);
-        if (cell) {
-            cell.classList.remove('hidden');
-            cell.classList.add(shot.hit ? 'hit' : 'miss');
-        }
-    });
+    // Сброс всех ячеек
+    for (let cell of cells) {
+        cell.classList.remove('hit', 'miss');
+        cell.classList.add('hidden');
+    }
+    
+    // Отображение выстрелов
+    if (shots) {
+        shots.forEach(shot => {
+            const cell = board.querySelector(`[data-x="${shot.x}"][data-y="${shot.y}"]`);
+            if (cell) {
+                cell.classList.remove('hidden');
+                cell.classList.add(shot.hit ? 'hit' : 'miss');
+            }
+        });
+    }
 }
 
 function checkWin(shots, enemyShips) {
+    if (!enemyShips || !shots) return false;
+    
     return enemyShips.every(ship =>
         ship.positions.every(pos =>
             shots.some(shot => shot.x === pos.x && shot.y === pos.y && shot.hit)
@@ -270,7 +303,7 @@ function checkWin(shots, enemyShips) {
 }
 
 async function updateStats(playerId, isWin) {
-    const { data: stats } = await supabase
+    const { data: stats } = await supabaseClient
         .from('player_stats')
         .select('*')
         .eq('player_id', playerId)
@@ -283,12 +316,12 @@ async function updateStats(playerId, isWin) {
     };
 
     if (stats) {
-        await supabase
+        await supabaseClient
             .from('player_stats')
             .update(updateData)
             .eq('player_id', playerId);
     } else {
-        await supabase
+        await supabaseClient
             .from('player_stats')
             .insert([{ player_id: playerId, ...updateData }]);
     }
@@ -304,4 +337,6 @@ function updateStatus(message) {
 }
 
 // Инициализация при загрузке
-init();
+document.addEventListener('DOMContentLoaded', function() {
+    init();
+});
