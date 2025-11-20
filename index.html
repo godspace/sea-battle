@@ -8,7 +8,6 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     
     <style>
-        /* Стили остаются без изменений */
         :root {
             --primary: #000000;
             --secondary: #222222;
@@ -394,6 +393,11 @@
             // Инициализация Supabase клиента
             supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
             
+            // Добавляем обработчик изменений аутентификации
+            supabase.auth.onAuthStateChange((event, session) => {
+                console.log('Auth state changed:', event, session);
+            });
+            
             // Инициализация DOM элементов
             initDOMElements();
             
@@ -510,27 +514,41 @@
                 return;
             }
 
-            const { error: profileError } = await supabase.from('profiles').upsert({ id: data.user.id, username: username });
+            // Ждем немного перед созданием профиля
+            setTimeout(async () => {
+                const { error: profileError } = await supabase.from('profiles').upsert({ 
+                    id: data.user.id, 
+                    username: username 
+                });
 
-            if (profileError) {
-                 console.error('Ошибка сохранения профиля:', profileError.message);
-                 displayAuthMessage('Ошибка сохранения профиля. Попробуйте войти.', false);
-                 return;
+                if (profileError) {
+                    console.error('Ошибка сохранения профиля:', profileError.message);
+                    displayAuthMessage('Ошибка сохранения профиля. Попробуйте войти.', false);
+                    return;
+                }
+
+                currentUserData.id = data.user.id;
+                currentUserData.username = username;
+                resetAuthFields();
+                setupPresence(data.user.id, username);
+                updateUI(data.user, username);
+                displayAuthMessage(`🎉 Регистрация успешна! Добро пожаловать, ${username}!`, true);
+            }, 1000);
+        }
+
+        function setupPresence(userId, username) {
+            if (presenceChannel) {
+                supabase.removeChannel(presenceChannel);
+                presenceChannel = null;
             }
 
-            currentUserData.id = data.user.id;
-            currentUserData.username = username;
-            resetAuthFields();
-            setupPresence(data.user.id, username);
-            updateUI(data.user, username);
-            displayAuthMessage(`🎉 Регистрация успешна! Добро пожаловать, ${username}!`, true);
-        }
-        
-        function setupPresence(userId, username) {
-            if (presenceChannel) supabase.removeChannel(presenceChannel);
-
             presenceChannel = supabase.channel('online-players', {
-                config: { presence: { key: userId } }
+                config: { 
+                    presence: { 
+                        key: userId 
+                    },
+                    broadcast: { self: true }
+                }
             });
 
             presenceChannel.on('presence', { event: 'sync' }, () => {
@@ -539,13 +557,24 @@
             });
             
             presenceChannel.on('broadcast', { event: 'challenge' }, (payload) => {
+                console.log('Получен вызов:', payload);
                 handleIncomingChallenge(payload.payload);
+            });
+
+            presenceChannel.on('broadcast', { event: 'game_update' }, (payload) => {
+                console.log('Получено обновление игры:', payload);
             });
 
             presenceChannel
                 .subscribe(async (status) => {
+                    console.log('Статус подписки presence:', status);
                     if (status === 'SUBSCRIBED') {
-                        await presenceChannel.track({ user_id: userId, username: username });
+                        await presenceChannel.track({ 
+                            user_id: userId, 
+                            username: username,
+                            online_at: new Date().toISOString()
+                        });
+                        console.log('Presence tracking started for:', username);
                     }
                 });
         }
@@ -555,9 +584,13 @@
             const players = [];
 
             for (const key in state) {
-                const player = state[key][0]; 
-                if (player.user_id !== currentUserId) {
-                    players.push(player);
+                const presenceEntries = state[key];
+                if (Array.isArray(presenceEntries)) {
+                    presenceEntries.forEach(entry => {
+                        if (entry.user_id !== currentUserId) {
+                            players.push(entry);
+                        }
+                    });
                 }
             }
 
@@ -566,12 +599,12 @@
                 return;
             }
             
-            players.sort((a, b) => a.username.localeCompare(b.username));
+            players.sort((a, b) => a.username?.localeCompare(b.username));
 
             players.forEach(player => {
                 const listItem = document.createElement('li');
                 listItem.innerHTML = `
-                    <span>${player.username}</span>
+                    <span>${player.username || 'Unknown'}</span>
                     <button class="challenge-button" data-user-id="${player.user_id}" data-username="${player.username}" ${currentUserData.gameId ? 'disabled' : ''}>Вызвать 💥</button>
                 `;
                 onlinePlayersList.appendChild(listItem);
@@ -581,11 +614,11 @@
         async function handleLogout() {
             if (presenceChannel) {
                 await presenceChannel.untrack();
-                supabase.removeChannel(presenceChannel);
+                await supabase.removeChannel(presenceChannel);
                 presenceChannel = null;
             }
             if (gameChannel) {
-                supabase.removeChannel(gameChannel);
+                await supabase.removeChannel(gameChannel);
                 gameChannel = null;
             }
             
@@ -596,45 +629,65 @@
             boardsContainer.style.display = 'none';
             activeGameInfo.style.display = 'none';
             currentUserData = { id: null, username: null, gameId: null };
+            currentGameState = null;
             myShipPlacement = [];
             
             displayAuthMessage('Вы вышли из системы.', true);
         }
-        
+
         async function sendChallenge(targetId, targetUsername) {
-            if (!presenceChannel || currentUserData.gameId) return alert('Вы уже в игре или канал не активен.');
-
-            const { data: game, error: gameError } = await supabase
-                .from('games')
-                .insert([{ player1_id: currentUserData.id, status: 'lobby' }])
-                .select()
-                .single();
-            
-            if (gameError) {
-                console.error('Ошибка создания игры:', gameError);
-                return alert('Ошибка создания игры в базе данных.');
+            if (!presenceChannel || currentUserData.gameId) {
+                return alert('Вы уже в игре или канал не активен.');
             }
-            
-            const gameId = game.id;
-            currentUserData.gameId = gameId;
 
-            await presenceChannel.send({
-                type: 'broadcast',
-                event: 'challenge',
-                payload: {
-                    challengerId: currentUserData.id,
-                    challengerUsername: currentUserData.username,
-                    targetId: targetId,
-                    targetUsername: targetUsername,
-                    gameId: gameId
+            console.log('Отправка вызова игроку:', targetUsername, targetId);
+
+            try {
+                const { data: game, error: gameError } = await supabase
+                    .from('games')
+                    .insert([{ 
+                        player1_id: currentUserData.id, 
+                        status: 'lobby',
+                        created_at: new Date().toISOString()
+                    }])
+                    .select()
+                    .single();
+                
+                if (gameError) {
+                    console.error('Ошибка создания игры:', gameError);
+                    return alert('Ошибка создания игры в базе данных: ' + gameError.message);
                 }
-            });
+                
+                const gameId = game.id;
+                currentUserData.gameId = gameId;
 
-            alert(`Вызов отправлен игроку ${targetUsername}. Ожидайте ответа...`);
-            startGame(game, targetUsername, true);
+                // Отправляем вызов через broadcast
+                const challengeResult = await presenceChannel.send({
+                    type: 'broadcast',
+                    event: 'challenge',
+                    payload: {
+                        challengerId: currentUserData.id,
+                        challengerUsername: currentUserData.username,
+                        targetId: targetId,
+                        targetUsername: targetUsername,
+                        gameId: gameId,
+                        timestamp: new Date().toISOString()
+                    }
+                });
+
+                console.log('Вызов отправлен, результат:', challengeResult);
+
+                alert(`Вызов отправлен игроку ${targetUsername}. Ожидайте ответа...`);
+                startGame(game, targetUsername, true);
+            } catch (error) {
+                console.error('Ошибка при отправке вызова:', error);
+                alert('Ошибка при отправке вызова: ' + error.message);
+            }
         }
-        
+
         function handleIncomingChallenge(payload) {
+            console.log('Обработка входящего вызова:', payload);
+            
             if (payload.targetId === currentUserData.id && !currentUserData.gameId) {
                 const confirmChallenge = confirm(
                     `Игрок ${payload.challengerUsername} вызывает вас на Морской Бой! Принять?`
@@ -642,56 +695,124 @@
 
                 if (confirmChallenge) {
                     joinGame(payload.gameId, payload.challengerUsername);
+                } else {
+                    // Отклонение вызова
+                    presenceChannel.send({
+                        type: 'broadcast',
+                        event: 'challenge_declined',
+                        payload: {
+                            gameId: payload.gameId,
+                            targetId: currentUserData.id
+                        }
+                    });
                 }
             }
         }
-        
+
         async function joinGame(gameId, challengerUsername) {
-            currentUserData.gameId = gameId;
+            console.log('Присоединение к игре:', gameId, challengerUsername);
             
-            const { data: initialGame } = await supabase.from('games').select('player1_id').eq('id', gameId).single();
-
-            const firstTurnId = Math.random() < 0.5 ? initialGame.player1_id : currentUserData.id;
-
-            const { data: updatedGame, error } = await supabase
-                .from('games')
-                .update({ 
-                    player2_id: currentUserData.id,
-                    status: 'placement',
-                    current_turn: firstTurnId 
-                })
-                .eq('id', gameId)
-                .select()
-                .single();
-
-            if (error) {
-                console.error('Ошибка присоединения к игре:', error);
-                return alert('Не удалось присоединиться к игре.');
+            if (!gameId) {
+                alert('Ошибка: ID игры не получен');
+                return;
             }
 
-            alert('Вы успешно присоединились к игре! Начните расстановку кораблей.');
-            startGame(updatedGame, challengerUsername, false); 
+            try {
+                currentUserData.gameId = gameId;
+                
+                // Получаем текущее состояние игры
+                const { data: initialGame, error: initialError } = await supabase
+                    .from('games')
+                    .select('*')
+                    .eq('id', gameId)
+                    .single();
+
+                if (initialError) {
+                    console.error('Ошибка получения игры:', initialError);
+                    alert('Ошибка при присоединении к игре: ' + initialError.message);
+                    return;
+                }
+
+                if (!initialGame) {
+                    alert('Игра не найдена');
+                    return;
+                }
+
+                // Определяем кто ходит первым
+                const firstTurnId = Math.random() < 0.5 ? initialGame.player1_id : currentUserData.id;
+
+                // Обновляем игру
+                const { data: updatedGame, error } = await supabase
+                    .from('games')
+                    .update({ 
+                        player2_id: currentUserData.id,
+                        status: 'placement',
+                        current_turn: firstTurnId,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('id', gameId)
+                    .select()
+                    .single();
+
+                if (error) {
+                    console.error('Ошибка присоединения к игре:', error);
+                    alert('Не удалось присоединиться к игре: ' + error.message);
+                    return;
+                }
+
+                console.log('Успешно присоединились к игре:', updatedGame);
+                
+                // Уведомляем о успешном присоединении
+                presenceChannel.send({
+                    type: 'broadcast',
+                    event: 'game_update',
+                    payload: {
+                        gameId: gameId,
+                        type: 'player_joined',
+                        playerId: currentUserData.id,
+                        playerUsername: currentUserData.username
+                    }
+                });
+
+                alert('Вы успешно присоединились к игре! Начните расстановку кораблей.');
+                startGame(updatedGame, challengerUsername, false);
+            } catch (error) {
+                console.error('Ошибка в joinGame:', error);
+                alert('Произошла ошибка: ' + error.message);
+            }
         }
 
         async function startGame(gameData, opponentUsername, isChallenger) {
-             currentGameState = gameData;
-             
-             activeGameInfo.style.display = 'block';
-             boardsContainer.style.display = 'block';
-             document.getElementById('game-id-display').textContent = gameData.id.substring(0, 8) + '...';
-             document.getElementById('opponent-name-display').textContent = opponentUsername;
-             document.getElementById('players-list-card').style.display = 'none';
+            console.log('Запуск игры:', gameData, opponentUsername, isChallenger);
+            
+            if (!gameData) {
+                alert('Ошибка: данные игры не получены');
+                return;
+            }
 
-             createBoard(myBoardElement, true, 'placement');
-             createBoard(opponentBoardElement, false, 'attack');
-             document.getElementById('opponent-board-wrapper').style.display = 'none';
+            try {
+                currentGameState = gameData;
+                
+                activeGameInfo.style.display = 'block';
+                boardsContainer.style.display = 'block';
+                document.getElementById('game-id-display').textContent = gameData.id.substring(0, 8) + '...';
+                document.getElementById('opponent-name-display').textContent = opponentUsername;
+                document.getElementById('players-list-card').style.display = 'none';
 
-             document.getElementById('boards-title').textContent = '🛥️ Расстановка кораблей';
-             myBoardElement.classList.remove('disabled');
-             startBattleButton.onclick = () => finishPlacement(gameData.id, isChallenger);
-             updateShipsRemainingDisplay();
-             
-             setupGameChannel(gameData.id);
+                createBoard(myBoardElement, true, 'placement');
+                createBoard(opponentBoardElement, false, 'attack');
+                document.getElementById('opponent-board-wrapper').style.display = 'none';
+
+                document.getElementById('boards-title').textContent = '🛥️ Расстановка кораблей';
+                myBoardElement.classList.remove('disabled');
+                startBattleButton.onclick = () => finishPlacement(gameData.id);
+                updateShipsRemainingDisplay();
+                
+                setupGameChannel(gameData.id);
+            } catch (error) {
+                console.error('Ошибка в startGame:', error);
+                alert('Ошибка при запуске игры: ' + error.message);
+            }
         }
         
         function createBoard(container, isInteractive, mode) {
