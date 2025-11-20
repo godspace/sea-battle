@@ -8,16 +8,61 @@ const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 let currentGameId = null;
 let playerId = null;
 let isPlayer1 = false;
+let currentGameState = null;
+let gameChannel = null;
 
 // Инициализация игры
 function init() {
     playerId = generatePlayerId();
     console.log('Player ID:', playerId);
+    createCoordinateGrids();
+    showSection('lobby');
+}
+
+// Показать определенную секцию
+function showSection(sectionName) {
+    document.querySelectorAll('.game-section').forEach(section => {
+        section.style.display = 'none';
+    });
+    document.getElementById(sectionName).style.display = 'block';
+}
+
+// Создание координатных сеток
+function createCoordinateGrids() {
+    const letters = ['', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+    const numbers = ['', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
+    
+    // Для игровой доски
+    const playerCoords = document.getElementById('playerCoords');
+    const enemyCoords = document.getElementById('enemyCoords');
+    
+    playerCoords.innerHTML = '';
+    enemyCoords.innerHTML = '';
+    
+    // Заполняем координаты
+    for (let row = 0; row < 11; row++) {
+        for (let col = 0; col < 11; col++) {
+            const coordCell = document.createElement('div');
+            coordCell.className = 'coord-cell';
+            
+            if (row === 0 && col > 0) {
+                coordCell.textContent = numbers[col];
+            } else if (col === 0 && row > 0) {
+                coordCell.textContent = letters[row];
+            }
+            
+            playerCoords.appendChild(coordCell.cloneNode(true));
+            enemyCoords.appendChild(coordCell.cloneNode(true));
+        }
+    }
 }
 
 // Создание новой игры
 async function createGame() {
     try {
+        document.getElementById('createBtn').disabled = true;
+        document.getElementById('createBtn').textContent = 'Создание...';
+        
         const gameId = generateGameCode();
         const ships = generateShips();
         
@@ -37,22 +82,28 @@ async function createGame() {
             .select();
 
         if (error) {
-            console.error('Error creating game:', error);
-            alert('Ошибка создания игры: ' + error.message);
-            return;
+            throw new Error('Ошибка создания игры: ' + error.message);
         }
 
         currentGameId = gameId;
         isPlayer1 = true;
-        showGame();
-        startGameListener();
+        
+        showGameScreen();
         renderBoard(ships, 'playerBoard', false);
         renderBoard([], 'enemyBoard', true);
-        updateStatus('Ожидаем второго игрока... Код игры: ' + gameId);
+        updateStatus('Ожидаем второго игрока...');
+        
+        // Показываем код игры
+        document.getElementById('gameCodeDisplay').style.display = 'inline-block';
+        document.getElementById('codeValue').textContent = gameId;
+        document.getElementById('codeValue').classList.add('pulse');
         
     } catch (error) {
         console.error('Exception in createGame:', error);
-        alert('Ошибка: ' + error.message);
+        alert(error.message);
+    } finally {
+        document.getElementById('createBtn').disabled = false;
+        document.getElementById('createBtn').textContent = 'Создать новую игру';
     }
 }
 
@@ -66,6 +117,9 @@ async function joinGame() {
             return;
         }
         
+        document.getElementById('joinBtn').disabled = true;
+        document.getElementById('joinBtn').textContent = 'Присоединение...';
+        
         console.log('Joining game:', gameCode);
         
         const { data, error } = await supabaseClient
@@ -75,10 +129,8 @@ async function joinGame() {
             .eq('status', 'waiting')
             .single();
 
-        if (error) {
-            console.error('Error finding game:', error);
-            alert('Игра не найдена или уже началась');
-            return;
+        if (error || !data) {
+            throw new Error('Игра не найдена или уже началась');
         }
 
         const ships = generateShips();
@@ -93,30 +145,41 @@ async function joinGame() {
             .eq('id', gameCode);
 
         if (updateError) {
-            console.error('Error joining game:', updateError);
-            alert('Ошибка присоединения к игре: ' + updateError.message);
-            return;
+            throw new Error('Ошибка присоединения к игре: ' + updateError.message);
         }
 
         currentGameId = gameCode;
         isPlayer1 = false;
-        showGame();
-        startGameListener();
+        
+        showGameScreen();
         renderBoard(ships, 'playerBoard', false);
         renderBoard([], 'enemyBoard', true);
         updateStatus('Игра началась! Ожидаем ход противника');
         
     } catch (error) {
         console.error('Exception in joinGame:', error);
-        alert('Ошибка: ' + error.message);
+        alert(error.message);
+    } finally {
+        document.getElementById('joinBtn').disabled = false;
+        document.getElementById('joinBtn').textContent = 'Присоединиться к игре';
     }
+}
+
+// Показать игровой экран
+function showGameScreen() {
+    showSection('game');
+    startGameListener();
 }
 
 // Слушатель изменений игры
 function startGameListener() {
     console.log('Starting game listener for:', currentGameId);
     
-    supabaseClient
+    if (gameChannel) {
+        supabaseClient.removeChannel(gameChannel);
+    }
+    
+    gameChannel = supabaseClient
         .channel('game_changes')
         .on('postgres_changes', 
             { 
@@ -137,20 +200,23 @@ function startGameListener() {
 
 // Обработка обновлений игры
 async function handleGameUpdate(payload) {
-    console.log('Handling game update:', payload);
-    
     const game = payload.new;
+    currentGameState = game;
     
     if (game.status === 'finished') {
-        updateStatus(game.winner === playerId ? 'Вы победили!' : 'Вы проиграли!');
+        const isWinner = game.winner === playerId;
+        updateStatus(isWinner ? '🎉 Вы победили!' : '💥 Вы проиграли!');
+        highlightDestroyedShips();
         return;
     }
 
     // Обновляем статус хода
     if (game.current_turn === playerId) {
-        updateStatus('Ваш ход!');
+        updateStatus('🎯 Ваш ход! Выберите клетку для выстрела');
+        enableEnemyBoard();
     } else {
-        updateStatus('Ход противника...');
+        updateStatus('⏳ Ход противника... Ожидайте');
+        disableEnemyBoard();
     }
 
     // Обновление доски противника на основе наших выстрелов
@@ -160,6 +226,39 @@ async function handleGameUpdate(payload) {
     // Обновление нашей доски на основе выстрелов противника
     const enemyShots = isPlayer1 ? game.player2_shots : game.player1_shots;
     renderPlayerBoard(enemyShots, isPlayer1 ? game.player1_board : game.player2_board);
+    
+    // Подсветка уничтоженных кораблей
+    highlightDestroyedShips();
+}
+
+// Включение доски противника для хода
+function enableEnemyBoard() {
+    const enemyCells = document.querySelectorAll('#enemyBoard .cell');
+    enemyCells.forEach(cell => {
+        const x = parseInt(cell.dataset.x);
+        const y = parseInt(cell.dataset.y);
+        
+        // Проверяем, не стреляли ли уже в эту клетку
+        const myShots = isPlayer1 ? currentGameState.player1_shots : currentGameState.player2_shots;
+        const alreadyShot = myShots && myShots.some(shot => shot.x === x && shot.y === y);
+        
+        if (!alreadyShot) {
+            cell.style.cursor = 'pointer';
+            cell.onclick = () => makeShot(x, y);
+        } else {
+            cell.style.cursor = 'not-allowed';
+            cell.onclick = null;
+        }
+    });
+}
+
+// Отключение доски противника
+function disableEnemyBoard() {
+    const enemyCells = document.querySelectorAll('#enemyBoard .cell');
+    enemyCells.forEach(cell => {
+        cell.style.cursor = 'not-allowed';
+        cell.onclick = null;
+    });
 }
 
 // Выстрел
@@ -167,23 +266,12 @@ async function makeShot(x, y) {
     try {
         console.log('Making shot at:', x, y);
         
-        const { data: game, error } = await supabaseClient
-            .from('games')
-            .select('*')
-            .eq('id', currentGameId)
-            .single();
-
-        if (error) {
-            console.error('Error fetching game:', error);
-            return;
-        }
-
-        if (game.current_turn !== playerId) {
+        if (!currentGameState || currentGameState.current_turn !== playerId) {
             alert('Не ваш ход!');
             return;
         }
 
-        const shots = isPlayer1 ? game.player1_shots : game.player2_shots;
+        const shots = isPlayer1 ? currentGameState.player1_shots : currentGameState.player2_shots;
         
         // Проверяем, не стреляли ли уже сюда
         if (shots && shots.some(shot => shot.x === x && shot.y === y)) {
@@ -191,7 +279,7 @@ async function makeShot(x, y) {
             return;
         }
 
-        const enemyBoard = isPlayer1 ? game.player2_board : game.player1_board;
+        const enemyBoard = isPlayer1 ? currentGameState.player2_board : currentGameState.player1_board;
         const isHit = enemyBoard.some(ship => 
             ship.positions.some(pos => pos.x === x && pos.y === y)
         );
@@ -200,7 +288,7 @@ async function makeShot(x, y) {
         
         const updateData = {
             [isPlayer1 ? 'player1_shots' : 'player2_shots']: newShots,
-            current_turn: isPlayer1 ? game.player2_id : game.player1_id
+            current_turn: isPlayer1 ? currentGameState.player2_id : currentGameState.player1_id
         };
 
         // Проверка победы
@@ -208,10 +296,10 @@ async function makeShot(x, y) {
             updateData.status = 'finished';
             updateData.winner = playerId;
             await updateStats(playerId, true);
-            if (isPlayer1 && game.player2_id) {
-                await updateStats(game.player2_id, false);
-            } else if (game.player1_id) {
-                await updateStats(game.player1_id, false);
+            if (isPlayer1 && currentGameState.player2_id) {
+                await updateStats(currentGameState.player2_id, false);
+            } else if (currentGameState.player1_id) {
+                await updateStats(currentGameState.player1_id, false);
             }
         }
 
@@ -221,14 +309,44 @@ async function makeShot(x, y) {
             .eq('id', currentGameId);
 
         if (updateError) {
-            console.error('Error updating game:', updateError);
-            alert('Ошибка выстрела: ' + updateError.message);
+            throw new Error('Ошибка выстрела: ' + updateError.message);
+        }
+        
+        // Визуальная обратная связь
+        const cell = document.querySelector(`#enemyBoard [data-x="${x}"][data-y="${y}"]`);
+        if (cell) {
+            cell.classList.add(isHit ? 'hit' : 'miss');
         }
         
     } catch (error) {
         console.error('Exception in makeShot:', error);
-        alert('Ошибка: ' + error.message);
+        alert(error.message);
     }
+}
+
+// Подсветка уничтоженных кораблей
+function highlightDestroyedShips() {
+    if (!currentGameState) return;
+    
+    const enemyBoard = isPlayer1 ? currentGameState.player2_board : currentGameState.player1_board;
+    const myShots = isPlayer1 ? currentGameState.player1_shots : currentGameState.player2_shots;
+    
+    if (!enemyBoard || !myShots) return;
+    
+    enemyBoard.forEach(ship => {
+        const isDestroyed = ship.positions.every(pos => 
+            myShots.some(shot => shot.x === pos.x && shot.y === pos.y && shot.hit)
+        );
+        
+        if (isDestroyed) {
+            ship.positions.forEach(pos => {
+                const cell = document.querySelector(`#enemyBoard [data-x="${pos.x}"][data-y="${pos.y}"]`);
+                if (cell) {
+                    cell.classList.add('ship-destroyed');
+                }
+            });
+        }
+    });
 }
 
 // Вспомогательные функции
@@ -301,8 +419,7 @@ function renderBoard(ships, boardId, isEnemy) {
             }
             
             if (isEnemy) {
-                cell.addEventListener('click', () => makeShot(x, y));
-                cell.classList.add('hidden');
+                cell.classList.add('enemy-cell', 'hidden');
             }
             
             board.appendChild(cell);
@@ -315,6 +432,14 @@ function renderEnemyBoard(shots) {
     
     if (!shots) return;
     
+    // Сначала сбрасываем все ячейки
+    const cells = board.getElementsByClassName('cell');
+    for (let cell of cells) {
+        cell.classList.remove('hit', 'miss', 'ship-destroyed');
+        cell.classList.add('hidden');
+    }
+    
+    // Затем применяем выстрелы
     shots.forEach(shot => {
         const cell = board.querySelector(`[data-x="${shot.x}"][data-y="${shot.y}"]`);
         if (cell) {
@@ -326,6 +451,8 @@ function renderEnemyBoard(shots) {
 
 function renderPlayerBoard(shots, ships) {
     const board = document.getElementById('playerBoard');
+    
+    if (!ships) return;
     
     // Сначала отрисовываем корабли
     for (let y = 0; y < 10; y++) {
@@ -395,13 +522,25 @@ async function updateStats(playerId, isWin) {
     }
 }
 
-function showGame() {
-    document.getElementById('lobby').style.display = 'none';
-    document.getElementById('game').style.display = 'block';
-}
-
 function updateStatus(message) {
     document.getElementById('status').textContent = message;
+}
+
+// Покинуть игру
+async function leaveGame() {
+    if (confirm('Вы уверены, что хотите покинуть игру?')) {
+        if (gameChannel) {
+            supabaseClient.removeChannel(gameChannel);
+            gameChannel = null;
+        }
+        
+        currentGameId = null;
+        currentGameState = null;
+        
+        showSection('lobby');
+        document.getElementById('gameCodeDisplay').style.display = 'none';
+        document.getElementById('gameCode').value = '';
+    }
 }
 
 // Инициализация при загрузке
