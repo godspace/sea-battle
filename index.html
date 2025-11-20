@@ -8,7 +8,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     
     <style>
-        /* --- 1. ЦВЕТА И ПЕРЕМЕННЫЕ --- */
+        /* Стили остаются без изменений */
         :root {
             --primary: #000000;
             --secondary: #222222;
@@ -18,7 +18,6 @@
             --shadow-dark: rgba(0, 0, 0, 0.4);
         }
 
-        /* --- 2. БАЗОВЫЕ СТИЛИ И ФОН С ЧАСТИЦАМИ --- */
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #303030 0%, #101010 100%);
@@ -33,7 +32,6 @@
             overflow-x: hidden;
         }
 
-        /* Контейнер для частиц */
         .particles-bg {
             position: fixed;
             top: 0;
@@ -99,7 +97,6 @@
             to { opacity: 1; transform: translateY(0); }
         }
 
-        /* --- 3. ФОРМЫ И КНОПКИ --- */
         input[type="text"], input[type="password"] {
             padding: 14px;
             margin: 8px 0;
@@ -152,7 +149,6 @@
             width: 50%;
         }
         
-        /* --- 4. УВЕДОМЛЕНИЯ И СОСТОЯНИЯ --- */
         #auth-message {
             text-align: center;
             margin-top: 15px;
@@ -183,7 +179,6 @@
             border-radius: 5px;
         }
         
-        /* --- 5. СПИСОК ИГРОКОВ (ЛОББИ) --- */
         #online-players-list {
             list-style: none;
             padding: 0;
@@ -205,7 +200,6 @@
             font-size: 14px;
         }
         
-        /* --- 6. ИГРОВЫЕ ПОЛЯ --- */
         .boards {
             display: flex;
             justify-content: space-around;
@@ -275,7 +269,7 @@
         .disabled {
             pointer-events: none;
             opacity: 0.7;
-            cursor: not-allowed !important;
+            cursor: not-allowed;
         }
         
         .turn-highlight {
@@ -363,10 +357,10 @@
     </main>
 
     <script>
-        const SUPABASE_URL = 'https://snsvzagvrzdoxaepvivt.supabase.co'; 
-        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNuc3Z6YWd2cnpkb3hhZXB2aXZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2Mjg0NDIsImV4cCI6MjA3OTIwNDQ0Mn0.q5OATaGULNHzWmT7ccDlPNTITh7091kyxFFh8LL7ZAY';
+        // ОБНОВЛЕННЫЕ ДАННЫЕ SUPABASE
+        const SUPABASE_URL = 'https://lazsklnncyvqmmwkbzoj.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhenNrbG5uY3l2cW1td2tiem9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2NTI4MTksImV4cCI6MjA3OTIyODgxOX0.XzMQCCleyEqie5Bl3of0Q_SeXMSBkCKhuLJ8CQsuy5w';
         
-        // ИНИЦИАЛИЗАЦИЯ: Supabase теперь определен и работает
         const supabase = Supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
         const authSection = document.getElementById('auth-section');
@@ -397,8 +391,6 @@
         let myShipPlacement = []; 
         let isMyTurn = false;
         
-        // --- ОБРАБОТКА UI И УВЕДОМЛЕНИЙ ---
-        
         function displayAuthMessage(message, isSuccess = true) {
             authMessage.textContent = message;
             authMessage.className = isSuccess ? 'success-message' : 'error-message';
@@ -420,8 +412,6 @@
             currentUserIdSpan.textContent = user.id.substring(0, 8) + '...';
             document.getElementById('players-list-card').style.display = 'block';
         }
-
-        // --- ЛОГИКА АУТЕНТИФИКАЦИИ ---
 
         signinButton.addEventListener('click', async () => {
             const username = usernameInput.value.trim();
@@ -486,8 +476,6 @@
             displayAuthMessage(`🎉 Регистрация успешна! Добро пожаловать, ${username}!`, true);
         });
         
-        // --- ЛОГИКА ПРИСУТСТВИЯ (МУЛЬТИПЛЕЕРНОЕ ЛОББИ) ---
-
         function setupPresence(userId, username) {
             if (presenceChannel) supabase.removeChannel(presenceChannel);
 
@@ -562,8 +550,6 @@
             
             displayAuthMessage('Вы вышли из системы.', true);
         });
-        
-        // --- ЛОГИКА ИГРЫ И ВЫЗОВОВ ---
         
         document.addEventListener('click', (e) => {
             if (e.target.classList.contains('challenge-button')) {
