@@ -17,86 +17,105 @@ function init() {
 
 // Создание новой игры
 async function createGame() {
-    const gameId = generateGameCode();
-    const ships = generateShips();
-    
-    const { data, error } = await supabaseClient
-        .from('games')
-        .insert([
-            { 
-                id: gameId,
-                player1_id: playerId,
-                player1_board: ships,
-                current_turn: playerId,
-                status: 'waiting'
-            }
-        ])
-        .select();
+    try {
+        const gameId = generateGameCode();
+        const ships = generateShips();
+        
+        console.log('Creating game with ID:', gameId);
+        
+        const { data, error } = await supabaseClient
+            .from('games')
+            .insert([
+                { 
+                    id: gameId,
+                    player1_id: playerId,
+                    player1_board: ships,
+                    current_turn: playerId,
+                    status: 'waiting'
+                }
+            ])
+            .select();
 
-    if (error) {
-        console.error('Error creating game:', error);
-        alert('Ошибка создания игры: ' + error.message);
-        return;
+        if (error) {
+            console.error('Error creating game:', error);
+            alert('Ошибка создания игры: ' + error.message);
+            return;
+        }
+
+        currentGameId = gameId;
+        isPlayer1 = true;
+        showGame();
+        startGameListener();
+        renderBoard(ships, 'playerBoard', false);
+        renderBoard([], 'enemyBoard', true);
+        updateStatus('Ожидаем второго игрока... Код игры: ' + gameId);
+        
+    } catch (error) {
+        console.error('Exception in createGame:', error);
+        alert('Ошибка: ' + error.message);
     }
-
-    currentGameId = gameId;
-    isPlayer1 = true;
-    showGame();
-    startGameListener();
-    renderBoard(ships, 'playerBoard', false);
-    renderBoard(createEmptyBoard(), 'enemyBoard', true);
-    updateStatus('Ожидаем второго игрока... Код игры: ' + gameId);
 }
 
 // Присоединение к игре
 async function joinGame() {
-    const gameCode = document.getElementById('gameCode').value.trim();
-    
-    if (!gameCode) {
-        alert('Введите код игры');
-        return;
+    try {
+        const gameCode = document.getElementById('gameCode').value.trim().toUpperCase();
+        
+        if (!gameCode) {
+            alert('Введите код игры');
+            return;
+        }
+        
+        console.log('Joining game:', gameCode);
+        
+        const { data, error } = await supabaseClient
+            .from('games')
+            .select('*')
+            .eq('id', gameCode)
+            .eq('status', 'waiting')
+            .single();
+
+        if (error) {
+            console.error('Error finding game:', error);
+            alert('Игра не найдена или уже началась');
+            return;
+        }
+
+        const ships = generateShips();
+        
+        const { error: updateError } = await supabaseClient
+            .from('games')
+            .update({
+                player2_id: playerId,
+                player2_board: ships,
+                status: 'playing'
+            })
+            .eq('id', gameCode);
+
+        if (updateError) {
+            console.error('Error joining game:', updateError);
+            alert('Ошибка присоединения к игре: ' + updateError.message);
+            return;
+        }
+
+        currentGameId = gameCode;
+        isPlayer1 = false;
+        showGame();
+        startGameListener();
+        renderBoard(ships, 'playerBoard', false);
+        renderBoard([], 'enemyBoard', true);
+        updateStatus('Игра началась! Ожидаем ход противника');
+        
+    } catch (error) {
+        console.error('Exception in joinGame:', error);
+        alert('Ошибка: ' + error.message);
     }
-    
-    const { data, error } = await supabaseClient
-        .from('games')
-        .select('*')
-        .eq('id', gameCode)
-        .eq('status', 'waiting')
-        .single();
-
-    if (error || !data) {
-        alert('Игра не найдена или уже началась');
-        return;
-    }
-
-    const ships = generateShips();
-    
-    const { error: updateError } = await supabaseClient
-        .from('games')
-        .update({
-            player2_id: playerId,
-            player2_board: ships,
-            status: 'playing'
-        })
-        .eq('id', gameCode);
-
-    if (updateError) {
-        console.error('Error joining game:', updateError);
-        alert('Ошибка присоединения к игре: ' + updateError.message);
-        return;
-    }
-
-    currentGameId = gameCode;
-    isPlayer1 = false;
-    showGame();
-    startGameListener();
-    renderBoard(ships, 'playerBoard', false);
-    renderBoard(createEmptyBoard(), 'enemyBoard', true);
-    updateStatus('Игра началась! Ожидаем ход противника');
 }
 
 // Слушатель изменений игры
 function startGameListener() {
+    console.log('Starting game listener for:', currentGameId);
+    
     supabaseClient
         .channel('game_changes')
         .on('postgres_changes', 
@@ -106,13 +125,20 @@ function startGameListener() {
                 table: 'games',
                 filter: `id=eq.${currentGameId}`
             }, 
-            handleGameUpdate
+            (payload) => {
+                console.log('Game update received:', payload);
+                handleGameUpdate(payload);
+            }
         )
-        .subscribe();
+        .subscribe((status) => {
+            console.log('Subscription status:', status);
+        });
 }
 
 // Обработка обновлений игры
 async function handleGameUpdate(payload) {
+    console.log('Handling game update:', payload);
+    
     const game = payload.new;
     
     if (game.status === 'finished') {
@@ -120,70 +146,88 @@ async function handleGameUpdate(payload) {
         return;
     }
 
+    // Обновляем статус хода
     if (game.current_turn === playerId) {
         updateStatus('Ваш ход!');
     } else {
         updateStatus('Ход противника...');
     }
 
-    // Обновление доски противника
+    // Обновление доски противника на основе наших выстрелов
+    const myShots = isPlayer1 ? game.player1_shots : game.player2_shots;
+    renderEnemyBoard(myShots);
+    
+    // Обновление нашей доски на основе выстрелов противника
     const enemyShots = isPlayer1 ? game.player2_shots : game.player1_shots;
-    renderEnemyBoard(enemyShots, game[isPlayer1 ? 'player2_board' : 'player1_board']);
+    renderPlayerBoard(enemyShots, isPlayer1 ? game.player1_board : game.player2_board);
 }
 
 // Выстрел
 async function makeShot(x, y) {
-    const { data: game, error } = await supabaseClient
-        .from('games')
-        .select('*')
-        .eq('id', currentGameId)
-        .single();
+    try {
+        console.log('Making shot at:', x, y);
+        
+        const { data: game, error } = await supabaseClient
+            .from('games')
+            .select('*')
+            .eq('id', currentGameId)
+            .single();
 
-    if (error) {
-        console.error('Error fetching game:', error);
-        return;
-    }
+        if (error) {
+            console.error('Error fetching game:', error);
+            return;
+        }
 
-    if (game.current_turn !== playerId) {
-        alert('Не ваш ход!');
-        return;
-    }
+        if (game.current_turn !== playerId) {
+            alert('Не ваш ход!');
+            return;
+        }
 
-    const shots = isPlayer1 ? game.player1_shots : game.player2_shots;
-    const shotKey = `${x},${y}`;
-    
-    if (shots.some(shot => shot.x === x && shot.y === y)) {
-        alert('Уже стреляли сюда!');
-        return;
-    }
+        const shots = isPlayer1 ? game.player1_shots : game.player2_shots;
+        
+        // Проверяем, не стреляли ли уже сюда
+        if (shots && shots.some(shot => shot.x === x && shot.y === y)) {
+            alert('Уже стреляли сюда!');
+            return;
+        }
 
-    const enemyBoard = isPlayer1 ? game.player2_board : game.player1_board;
-    const isHit = enemyBoard.some(ship => 
-        ship.positions.some(pos => pos.x === x && pos.y === y)
-    );
+        const enemyBoard = isPlayer1 ? game.player2_board : game.player1_board;
+        const isHit = enemyBoard.some(ship => 
+            ship.positions.some(pos => pos.x === x && pos.y === y)
+        );
 
-    const newShots = [...shots, { x, y, hit: isHit }];
-    
-    const updateData = {
-        [isPlayer1 ? 'player1_shots' : 'player2_shots']: newShots,
-        current_turn: isPlayer1 ? game.player2_id : game.player1_id
-    };
+        const newShots = [...(shots || []), { x, y, hit: isHit }];
+        
+        const updateData = {
+            [isPlayer1 ? 'player1_shots' : 'player2_shots']: newShots,
+            current_turn: isPlayer1 ? game.player2_id : game.player1_id
+        };
 
-    // Проверка победы
-    if (checkWin(newShots, enemyBoard)) {
-        updateData.status = 'finished';
-        updateData.winner = playerId;
-        await updateStats(playerId, true);
-        await updateStats(isPlayer1 ? game.player2_id : game.player1_id, false);
-    }
+        // Проверка победы
+        if (checkWin(newShots, enemyBoard)) {
+            updateData.status = 'finished';
+            updateData.winner = playerId;
+            await updateStats(playerId, true);
+            if (isPlayer1 && game.player2_id) {
+                await updateStats(game.player2_id, false);
+            } else if (game.player1_id) {
+                await updateStats(game.player1_id, false);
+            }
+        }
 
-    const { error: updateError } = await supabaseClient
-        .from('games')
-        .update(updateData)
-        .eq('id', currentGameId);
+        const { error: updateError } = await supabaseClient
+            .from('games')
+            .update(updateData)
+            .eq('id', currentGameId);
 
-    if (updateError) {
-        console.error('Error updating game:', updateError);
+        if (updateError) {
+            console.error('Error updating game:', updateError);
+            alert('Ошибка выстрела: ' + updateError.message);
+        }
+        
+    } catch (error) {
+        console.error('Exception in makeShot:', error);
+        alert('Ошибка: ' + error.message);
     }
 }
 
@@ -237,10 +281,6 @@ function generateShips() {
     return ships;
 }
 
-function createEmptyBoard() {
-    return [];
-}
-
 function renderBoard(ships, boardId, isEnemy) {
     const board = document.getElementById(boardId);
     board.innerHTML = '';
@@ -270,22 +310,46 @@ function renderBoard(ships, boardId, isEnemy) {
     }
 }
 
-function renderEnemyBoard(shots, enemyShips) {
+function renderEnemyBoard(shots) {
     const board = document.getElementById('enemyBoard');
-    const cells = board.getElementsByClassName('cell');
     
-    // Сброс всех ячеек
-    for (let cell of cells) {
-        cell.classList.remove('hit', 'miss');
-        cell.classList.add('hidden');
+    if (!shots) return;
+    
+    shots.forEach(shot => {
+        const cell = board.querySelector(`[data-x="${shot.x}"][data-y="${shot.y}"]`);
+        if (cell) {
+            cell.classList.remove('hidden');
+            cell.classList.add(shot.hit ? 'hit' : 'miss');
+        }
+    });
+}
+
+function renderPlayerBoard(shots, ships) {
+    const board = document.getElementById('playerBoard');
+    
+    // Сначала отрисовываем корабли
+    for (let y = 0; y < 10; y++) {
+        for (let x = 0; x < 10; x++) {
+            const cell = board.querySelector(`[data-x="${x}"][data-y="${y}"]`);
+            if (cell) {
+                cell.className = 'cell';
+                
+                const hasShip = ships.some(ship =>
+                    ship.positions.some(pos => pos.x === x && pos.y === y)
+                );
+                
+                if (hasShip) {
+                    cell.classList.add('ship');
+                }
+            }
+        }
     }
     
-    // Отображение выстрелов
+    // Затем отрисовываем выстрелы
     if (shots) {
         shots.forEach(shot => {
             const cell = board.querySelector(`[data-x="${shot.x}"][data-y="${shot.y}"]`);
             if (cell) {
-                cell.classList.remove('hidden');
                 cell.classList.add(shot.hit ? 'hit' : 'miss');
             }
         });
@@ -303,27 +367,31 @@ function checkWin(shots, enemyShips) {
 }
 
 async function updateStats(playerId, isWin) {
-    const { data: stats } = await supabaseClient
-        .from('player_stats')
-        .select('*')
-        .eq('player_id', playerId)
-        .single();
-
-    const updateData = {
-        games_played: (stats?.games_played || 0) + 1,
-        games_won: (stats?.games_won || 0) + (isWin ? 1 : 0),
-        total_shots: (stats?.total_shots || 0) + 1
-    };
-
-    if (stats) {
-        await supabaseClient
+    try {
+        const { data: stats } = await supabaseClient
             .from('player_stats')
-            .update(updateData)
-            .eq('player_id', playerId);
-    } else {
-        await supabaseClient
-            .from('player_stats')
-            .insert([{ player_id: playerId, ...updateData }]);
+            .select('*')
+            .eq('player_id', playerId)
+            .single();
+
+        const updateData = {
+            games_played: (stats?.games_played || 0) + 1,
+            games_won: (stats?.games_won || 0) + (isWin ? 1 : 0),
+            total_shots: (stats?.total_shots || 0) + 1
+        };
+
+        if (stats) {
+            await supabaseClient
+                .from('player_stats')
+                .update(updateData)
+                .eq('player_id', playerId);
+        } else {
+            await supabaseClient
+                .from('player_stats')
+                .insert([{ player_id: playerId, ...updateData }]);
+        }
+    } catch (error) {
+        console.error('Error updating stats:', error);
     }
 }
 
