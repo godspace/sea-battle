@@ -286,6 +286,24 @@
             text-align: center;
             padding: 20px;
         }
+
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: var(--success);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 1000;
+            animation: slideInRight 0.3s ease-out;
+        }
+
+        @keyframes slideInRight {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -396,6 +414,9 @@
             // Добавляем обработчик изменений аутентификации
             supabase.auth.onAuthStateChange((event, session) => {
                 console.log('Auth state changed:', event, session);
+                if (event === 'SIGNED_OUT') {
+                    resetAppState();
+                }
             });
             
             // Инициализация DOM элементов
@@ -445,12 +466,44 @@
             });
         }
 
+        function resetAppState() {
+            currentUserData = { id: null, username: null, gameId: null };
+            currentGameState = null;
+            myShipPlacement = [];
+            
+            if (presenceChannel) {
+                supabase.removeChannel(presenceChannel);
+                presenceChannel = null;
+            }
+            
+            if (gameChannel) {
+                supabase.removeChannel(gameChannel);
+                gameChannel = null;
+            }
+            
+            authSection.style.display = 'block';
+            gameSection.style.display = 'none';
+            boardsContainer.style.display = 'none';
+            activeGameInfo.style.display = 'none';
+        }
+
         function displayAuthMessage(message, isSuccess = true) {
             authMessage.textContent = message;
             authMessage.className = isSuccess ? 'success-message' : 'error-message';
             setTimeout(() => {
                 authMessage.textContent = '';
                 authMessage.className = '';
+            }, 5000);
+        }
+
+        function showNotification(message, type = 'info') {
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => {
+                notification.remove();
             }, 5000);
         }
 
@@ -547,12 +600,16 @@
                     presence: { 
                         key: userId 
                     },
-                    broadcast: { self: true }
+                    broadcast: { 
+                        self: true,
+                        ack: true
+                    }
                 }
             });
 
             presenceChannel.on('presence', { event: 'sync' }, () => {
                 const state = presenceChannel.presenceState();
+                console.log('Presence state updated:', state);
                 displayOnlinePlayers(state, userId);
             });
             
@@ -563,20 +620,28 @@
 
             presenceChannel.on('broadcast', { event: 'game_update' }, (payload) => {
                 console.log('Получено обновление игры:', payload);
+                if (payload.payload.type === 'player_joined') {
+                    showNotification(`Игрок ${payload.payload.playerUsername} присоединился к игре!`, 'success');
+                }
             });
 
-            presenceChannel
-                .subscribe(async (status) => {
-                    console.log('Статус подписки presence:', status);
-                    if (status === 'SUBSCRIBED') {
-                        await presenceChannel.track({ 
-                            user_id: userId, 
-                            username: username,
-                            online_at: new Date().toISOString()
-                        });
-                        console.log('Presence tracking started for:', username);
-                    }
-                });
+            // Обработка системных событий канала
+            presenceChannel.on('system', { event: '*' }, (payload) => {
+                console.log('System event:', payload);
+            });
+
+            presenceChannel.subscribe(async (status) => {
+                console.log('Presence channel status:', status);
+                if (status === 'SUBSCRIBED') {
+                    const presenceTrackStatus = await presenceChannel.track({ 
+                        user_id: userId, 
+                        username: username,
+                        online_at: new Date().toISOString(),
+                        status: 'online'
+                    });
+                    console.log('Presence track status:', presenceTrackStatus);
+                }
+            });
         }
 
         function displayOnlinePlayers(state, currentUserId) {
@@ -623,15 +688,7 @@
             }
             
             await supabase.auth.signOut();
-            
-            authSection.style.display = 'block';
-            gameSection.style.display = 'none';
-            boardsContainer.style.display = 'none';
-            activeGameInfo.style.display = 'none';
-            currentUserData = { id: null, username: null, gameId: null };
-            currentGameState = null;
-            myShipPlacement = [];
-            
+            resetAppState();
             displayAuthMessage('Вы вышли из системы.', true);
         }
 
@@ -661,7 +718,7 @@
                 const gameId = game.id;
                 currentUserData.gameId = gameId;
 
-                // Отправляем вызов через broadcast
+                // Отправляем вызов через broadcast с подтверждением
                 const challengeResult = await presenceChannel.send({
                     type: 'broadcast',
                     event: 'challenge',
@@ -673,12 +730,16 @@
                         gameId: gameId,
                         timestamp: new Date().toISOString()
                     }
-                });
+                }, { ack: true });
 
                 console.log('Вызов отправлен, результат:', challengeResult);
 
-                alert(`Вызов отправлен игроку ${targetUsername}. Ожидайте ответа...`);
-                startGame(game, targetUsername, true);
+                if (challengeResult === 'ok' || challengeResult === 'timed out') {
+                    alert(`Вызов отправлен игроку ${targetUsername}. Ожидайте ответа...`);
+                    startGame(game, targetUsername, true);
+                } else {
+                    alert('Ошибка при отправке вызова. Попробуйте снова.');
+                }
             } catch (error) {
                 console.error('Ошибка при отправке вызова:', error);
                 alert('Ошибка при отправке вызова: ' + error.message);
@@ -689,6 +750,8 @@
             console.log('Обработка входящего вызова:', payload);
             
             if (payload.targetId === currentUserData.id && !currentUserData.gameId) {
+                showNotification(`Игрок ${payload.challengerUsername} вызывает вас на бой!`, 'success');
+                
                 const confirmChallenge = confirm(
                     `Игрок ${payload.challengerUsername} вызывает вас на Морской Бой! Принять?`
                 );
@@ -774,7 +837,7 @@
                     }
                 });
 
-                alert('Вы успешно присоединились к игре! Начните расстановку кораблей.');
+                showNotification('Вы успешно присоединились к игре!', 'success');
                 startGame(updatedGame, challengerUsername, false);
             } catch (error) {
                 console.error('Ошибка в joinGame:', error);
@@ -934,18 +997,32 @@
         function setupGameChannel(gameId) {
             if (gameChannel) supabase.removeChannel(gameChannel);
 
-            gameChannel = supabase.channel(`game-${gameId}`);
+            gameChannel = supabase.channel(`game-${gameId}`, {
+                config: {
+                    broadcast: { self: true }
+                }
+            });
             
             gameChannel.on(
                 'postgres_changes',
                 { event: 'UPDATE', schema: 'public', table: 'games', filter: `id=eq.${gameId}` },
                 (payload) => {
+                    console.log('Game update received:', payload);
                     handleGameUpdate(payload.new);
                 }
-            ).subscribe();
+            );
+
+            gameChannel.on('broadcast', { event: 'game_action' }, (payload) => {
+                console.log('Game action received:', payload);
+            });
+
+            gameChannel.subscribe((status) => {
+                console.log('Game channel status:', status);
+            });
         }
         
         async function handleGameUpdate(gameData) {
+            console.log('Handling game update:', gameData);
             currentGameState = gameData;
             
             const myBoard = gameData.player1_id === currentUserData.id ? gameData.player1_board : gameData.player2_board;
@@ -1098,25 +1175,45 @@
         }
 
         async function checkAuthStatus() {
-            const { data: { user } } = await supabase.auth.getUser();
+            const { data: { user }, error } = await supabase.auth.getUser();
+
+            if (error) {
+                console.error('Error getting user:', error);
+                return;
+            }
 
             if (user) {
-                const { data: profile } = await supabase
+                const { data: profile, error: profileError } = await supabase
                     .from('profiles')
                     .select('username')
                     .eq('id', user.id)
                     .single();
 
-                if (!profile) {
-                    await supabase.auth.signOut();
-                    return;
+                if (profileError) {
+                    console.error('Error fetching profile:', profileError);
+                    // Попробуем создать профиль, если его нет
+                    const username = user.user_metadata?.username || 'user_' + user.id.substring(0, 8);
+                    const { error: upsertError } = await supabase.from('profiles').upsert({ 
+                        id: user.id, 
+                        username: username 
+                    });
+                    
+                    if (upsertError) {
+                        console.error('Error creating profile:', upsertError);
+                        await supabase.auth.signOut();
+                        return;
+                    }
+                    
+                    currentUserData.id = user.id;
+                    currentUserData.username = username;
+                    setupPresence(user.id, username);
+                    updateUI(user, username);
+                } else {
+                    currentUserData.id = user.id;
+                    currentUserData.username = profile.username;
+                    setupPresence(user.id, profile.username);
+                    updateUI(user, profile.username);
                 }
-                
-                currentUserData.id = user.id;
-                currentUserData.username = profile.username;
-
-                setupPresence(user.id, profile.username);
-                updateUI(user, profile.username);
                 
             } else {
                 authSection.style.display = 'block';
