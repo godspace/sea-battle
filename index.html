@@ -282,6 +282,11 @@
             max-width: 400px;
             margin-top: 50px;
         }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+        }
     </style>
 </head>
 <body>
@@ -301,7 +306,12 @@
     </header>
 
     <main>
-        <section id="auth-section" class="card">
+        <div id="loading-section" class="card loading">
+            <h2>🔄 Загрузка...</h2>
+            <p>Инициализация игры, пожалуйста подождите</p>
+        </div>
+
+        <section id="auth-section" class="card" style="display: none;">
             <h2>🔑 Вход / Регистрация</h2>
             <form id="auth-form">
                 <input type="text" id="username" placeholder="Введите ваше имя" required>
@@ -360,25 +370,13 @@
         // ОБНОВЛЕННЫЕ ДАННЫЕ SUPABASE
         const SUPABASE_URL = 'https://lazsklnncyvqmmwkbzoj.supabase.co';
         const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhenNrbG5uY3l2cW1td2tiem9qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjM2NTI4MTksImV4cCI6MjA3OTIyODgxOX0.XzMQCCleyEqie5Bl3of0Q_SeXMSBkCKhuLJ8CQsuy5w';
-        
-        const supabase = Supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-        const authSection = document.getElementById('auth-section');
-        const gameSection = document.getElementById('game-section');
-        const currentUsernameSpan = document.getElementById('current-username');
-        const currentUserIdSpan = document.getElementById('current-user-id');
-        const onlinePlayersList = document.getElementById('online-players-list');
-        const logoutButton = document.getElementById('logout-button');
-        const activeGameInfo = document.getElementById('active-game-info');
-        const boardsContainer = document.getElementById('boards-container');
-        const myBoardElement = document.getElementById('my-board');
-        const opponentBoardElement = document.getElementById('opponent-board');
-        const startBattleButton = document.getElementById('start-battle-button');
-        const signinButton = document.getElementById('signin-button');
-        const signupButton = document.getElementById('signup-button');
-        const authMessage = document.getElementById('auth-message');
-        const usernameInput = document.getElementById('username');
-        const passwordInput = document.getElementById('password');
+        let supabase;
+        let authSection, gameSection, currentUsernameSpan, currentUserIdSpan;
+        let onlinePlayersList, logoutButton, activeGameInfo, boardsContainer;
+        let myBoardElement, opponentBoardElement, startBattleButton;
+        let signinButton, signupButton, authMessage, usernameInput, passwordInput;
+        let loadingSection;
 
         let presenceChannel = null;
         let gameChannel = null;
@@ -390,7 +388,59 @@
         const TOTAL_SHIP_CELLS = Object.entries(SHIPS_CONFIG).reduce((sum, [size, count]) => sum + (parseInt(size.split('-')[0]) * count), 0);
         let myShipPlacement = []; 
         let isMyTurn = false;
-        
+
+        // Инициализация приложения после загрузки Supabase
+        function initApp() {
+            // Инициализация Supabase клиента
+            supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+            
+            // Инициализация DOM элементов
+            initDOMElements();
+            
+            // Инициализация обработчиков событий
+            initEventListeners();
+            
+            // Проверка статуса аутентификации
+            checkAuthStatus();
+            
+            // Скрыть экран загрузки
+            loadingSection.style.display = 'none';
+        }
+
+        function initDOMElements() {
+            authSection = document.getElementById('auth-section');
+            gameSection = document.getElementById('game-section');
+            currentUsernameSpan = document.getElementById('current-username');
+            currentUserIdSpan = document.getElementById('current-user-id');
+            onlinePlayersList = document.getElementById('online-players-list');
+            logoutButton = document.getElementById('logout-button');
+            activeGameInfo = document.getElementById('active-game-info');
+            boardsContainer = document.getElementById('boards-container');
+            myBoardElement = document.getElementById('my-board');
+            opponentBoardElement = document.getElementById('opponent-board');
+            startBattleButton = document.getElementById('start-battle-button');
+            signinButton = document.getElementById('signin-button');
+            signupButton = document.getElementById('signup-button');
+            authMessage = document.getElementById('auth-message');
+            usernameInput = document.getElementById('username');
+            passwordInput = document.getElementById('password');
+            loadingSection = document.getElementById('loading-section');
+        }
+
+        function initEventListeners() {
+            signinButton.addEventListener('click', handleSignIn);
+            signupButton.addEventListener('click', handleSignUp);
+            logoutButton.addEventListener('click', handleLogout);
+            
+            document.addEventListener('click', (e) => {
+                if (e.target.classList.contains('challenge-button')) {
+                    const targetUserId = e.target.dataset.userId;
+                    const targetUsername = e.target.dataset.username;
+                    sendChallenge(targetUserId, targetUsername);
+                }
+            });
+        }
+
         function displayAuthMessage(message, isSuccess = true) {
             authMessage.textContent = message;
             authMessage.className = isSuccess ? 'success-message' : 'error-message';
@@ -413,7 +463,7 @@
             document.getElementById('players-list-card').style.display = 'block';
         }
 
-        signinButton.addEventListener('click', async () => {
+        async function handleSignIn() {
             const username = usernameInput.value.trim();
             const password = passwordInput.value.trim();
             if (!username || !password) return displayAuthMessage('Введите имя и пароль.', false);
@@ -434,9 +484,9 @@
             setupPresence(data.user.id, username);
             updateUI(data.user, username);
             displayAuthMessage(`Добро пожаловать, ${username}! Вход выполнен.`, true);
-        });
+        }
 
-        signupButton.addEventListener('click', async () => {
+        async function handleSignUp() {
             const username = usernameInput.value.trim();
             const password = passwordInput.value.trim();
             
@@ -474,7 +524,7 @@
             setupPresence(data.user.id, username);
             updateUI(data.user, username);
             displayAuthMessage(`🎉 Регистрация успешна! Добро пожаловать, ${username}!`, true);
-        });
+        }
         
         function setupPresence(userId, username) {
             if (presenceChannel) supabase.removeChannel(presenceChannel);
@@ -528,7 +578,7 @@
             });
         }
 
-        logoutButton.addEventListener('click', async () => {
+        async function handleLogout() {
             if (presenceChannel) {
                 await presenceChannel.untrack();
                 supabase.removeChannel(presenceChannel);
@@ -549,15 +599,7 @@
             myShipPlacement = [];
             
             displayAuthMessage('Вы вышли из системы.', true);
-        });
-        
-        document.addEventListener('click', (e) => {
-            if (e.target.classList.contains('challenge-button')) {
-                const targetUserId = e.target.dataset.userId;
-                const targetUsername = e.target.dataset.username;
-                sendChallenge(targetUserId, targetUsername);
-            }
-        });
+        }
         
         async function sendChallenge(targetId, targetUsername) {
             if (!presenceChannel || currentUserData.gameId) return alert('Вы уже в игре или канал не активен.');
@@ -961,7 +1003,33 @@
             }
         }
 
-        checkAuthStatus();
+        // Ждем полной загрузки страницы и библиотеки Supabase
+        window.addEventListener('DOMContentLoaded', function() {
+            // Проверяем, загружена ли библиотека Supabase
+            if (window.supabase) {
+                initApp();
+            } else {
+                // Если библиотека еще не загружена, ждем
+                const checkSupabase = setInterval(() => {
+                    if (window.supabase) {
+                        clearInterval(checkSupabase);
+                        initApp();
+                    }
+                }, 100);
+                
+                // Таймаут на случай проблем с загрузкой
+                setTimeout(() => {
+                    if (!window.supabase) {
+                        clearInterval(checkSupabase);
+                        loadingSection.innerHTML = `
+                            <h2>❌ Ошибка загрузки</h2>
+                            <p>Не удалось загрузить библиотеку Supabase. Пожалуйста, обновите страницу.</p>
+                            <button onclick="window.location.reload()">Обновить страницу</button>
+                        `;
+                    }
+                }, 10000);
+            }
+        });
     </script>
 </body>
 </html>
